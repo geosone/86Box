@@ -44,6 +44,29 @@ rdisk_drive_t rdisk_drives[RDISK_NUM];
 /* Drives reached through a parallel-port bridge, indexed by LPT port. */
 static scsi_device_t lpt_rdisk_devices[PARALLEL_MAX];
 
+/*
+ * A Zip drive on the parallel port is a SCSI Zip drive behind the PPA3
+ * parallel-to-SCSI chip that Iomega built into it: the host talks SCSI to it,
+ * not ATAPI. Every other drive on the parallel port (the SuperDisk behind the
+ * Shuttle EPAT) is an ATAPI drive.
+ */
+static int
+rdisk_is_scsi(const rdisk_t *dev)
+{
+    return (dev->drv->bus_type == RDISK_BUS_SCSI) ||
+           ((dev->drv->bus_type == RDISK_BUS_LPT) && (dev->drv->type == RDISK_TYPE_ZIP_100));
+}
+
+/* The SCSI device entry of a drive that talks SCSI. */
+static scsi_device_t *
+rdisk_scsi_device(const rdisk_t *dev)
+{
+    if (dev->drv->bus_type == RDISK_BUS_LPT)
+        return &lpt_rdisk_devices[dev->drv->res & (PARALLEL_MAX - 1)];
+
+    return &scsi_devices[(dev->drv->scsi_device_id >> 4) & 0x0f][dev->drv->scsi_device_id & 0x0f];
+}
+
 // clang-format off
 /*
    Table of all SCSI commands and their flags, needed for the new disc change /
@@ -518,12 +541,12 @@ rdisk_init(rdisk_t *dev)
         dev->sense[0]         = 0xf0;
         dev->sense[7]         = 10;
         dev->drv->bus_mode    = 0;
-        if (dev->drv->bus_type >= RDISK_BUS_ATAPI)
+        if ((dev->drv->bus_type >= RDISK_BUS_ATAPI) || rdisk_is_scsi(dev))
             dev->drv->bus_mode |= 2;
-        if (dev->drv->bus_type < RDISK_BUS_SCSI)
+        if (!rdisk_is_scsi(dev))
             dev->drv->bus_mode |= 1;
         rdisk_log(dev->log, "Bus type %i, bus mode %i\n", dev->drv->bus_type, dev->drv->bus_mode);
-        if (dev->drv->bus_type < RDISK_BUS_SCSI) {
+        if (!rdisk_is_scsi(dev)) {
             dev->tf->phase          = 1;
             dev->tf->request_length = 0xEB14;
         }
@@ -576,22 +599,22 @@ rdisk_mode_sense_load(rdisk_t *dev)
     memset(&dev->ms_pages_saved, 0, sizeof(mode_sense_pages_t));
 
     if (dev->drv->type == RDISK_TYPE_ZIP_100) {
-        if (rdisk_drives[dev->id].bus_type == RDISK_BUS_SCSI)
+        if (rdisk_is_scsi(dev))
             memcpy(&dev->ms_pages_saved, &zip_100_mode_sense_pages_default_scsi, sizeof(mode_sense_pages_t));
         else
             memcpy(&dev->ms_pages_saved, &zip_100_mode_sense_pages_default, sizeof(mode_sense_pages_t));
     } else if (dev->drv->type == RDISK_TYPE_SYJET_1_5GB) {
-        if (rdisk_drives[dev->id].bus_type == RDISK_BUS_SCSI)
+        if (rdisk_is_scsi(dev))
             memcpy(&dev->ms_pages_saved, &syjet_mode_sense_pages_default_scsi, sizeof(mode_sense_pages_t));
         else
             memcpy(&dev->ms_pages_saved, &syjet_mode_sense_pages_default, sizeof(mode_sense_pages_t));
     } else if (dev->drv->type == RDISK_TYPE_SPARQ_1GB) {
-        if (rdisk_drives[dev->id].bus_type == RDISK_BUS_SCSI)
+        if (rdisk_is_scsi(dev))
             memcpy(&dev->ms_pages_saved, &sparq_mode_sense_pages_default_scsi, sizeof(mode_sense_pages_t));
         else
             memcpy(&dev->ms_pages_saved, &sparq_mode_sense_pages_default, sizeof(mode_sense_pages_t));
     } else {
-        if (rdisk_drives[dev->id].bus_type == RDISK_BUS_SCSI)
+        if (rdisk_is_scsi(dev))
             memcpy(&dev->ms_pages_saved, &zip_250_mode_sense_pages_default_scsi, sizeof(mode_sense_pages_t));
         else
             memcpy(&dev->ms_pages_saved, &zip_250_mode_sense_pages_default, sizeof(mode_sense_pages_t));
@@ -667,24 +690,24 @@ zip_mode_sense_read(const rdisk_t *dev, const uint8_t pgctl,
             return rdisk_mode_sense_pages_changeable(dev)->pages[page][pos];
         case 2:
             if (dev->drv->type == RDISK_TYPE_ZIP_100) {
-                if (dev->drv->bus_type == RDISK_BUS_SCSI)
+                if (rdisk_is_scsi(dev))
                     return zip_100_mode_sense_pages_default_scsi.pages[page][pos];
                 else
                     return zip_100_mode_sense_pages_default.pages[page][pos];
             } else if (dev->drv->type == RDISK_TYPE_SYJET_1_5GB) {
-                if (dev->drv->bus_type == RDISK_BUS_SCSI)
+                if (rdisk_is_scsi(dev))
                     return syjet_mode_sense_pages_default_scsi.pages[page][pos];
                 else
                     return syjet_mode_sense_pages_default.pages[page][pos];
             } else if (dev->drv->type == RDISK_TYPE_SPARQ_1GB) {
-                if (dev->drv->bus_type == RDISK_BUS_SCSI)
+                if (rdisk_is_scsi(dev))
                     return sparq_mode_sense_pages_default_scsi.pages[page][pos];
                 else
                     return sparq_mode_sense_pages_default.pages[page][pos];
             } else {
                 if ((page == 5) && (pos == 9) && (dev->drv->medium_size == ZIP_SECTORS))
                     return 0x60;
-                if (dev->drv->bus_type == RDISK_BUS_SCSI)
+                if (rdisk_is_scsi(dev))
                     return zip_250_mode_sense_pages_default_scsi.pages[page][pos];
                 else
                     return zip_250_mode_sense_pages_default.pages[page][pos];
@@ -828,7 +851,7 @@ rdisk_command_common(rdisk_t *dev)
     dev->tf->pos    = 0;
     if (dev->packet_status == PHASE_COMPLETE)
         dev->callback = 0.0;
-    else if (dev->drv->bus_type == RDISK_BUS_SCSI)
+    else if (rdisk_is_scsi(dev))
         dev->callback = -1.0; /* Speed depends on SCSI controller */
     else
         dev->callback = rdisk_bus_speed(dev) * (double) (dev->packet_len);
@@ -891,13 +914,13 @@ rdisk_data_command_finish(rdisk_t *dev, int len, const int block_len,
             len = alloc_len;
     }
     if ((len == 0) || (rdisk_current_mode(dev) == 0)) {
-        if (dev->drv->bus_type != RDISK_BUS_SCSI)
+        if (!rdisk_is_scsi(dev))
             dev->packet_len = 0;
 
         rdisk_command_complete(dev);
     } else {
         if (rdisk_current_mode(dev) == 2) {
-            if (dev->drv->bus_type != RDISK_BUS_SCSI)
+            if (!rdisk_is_scsi(dev))
                 dev->packet_len = alloc_len;
 
             if (direction == 0)
@@ -906,7 +929,7 @@ rdisk_data_command_finish(rdisk_t *dev, int len, const int block_len,
                 rdisk_command_write_dma(dev);
         } else {
             rdisk_update_request_length(dev, len, block_len);
-            if ((dev->drv->bus_type != RDISK_BUS_SCSI) &&
+            if (!rdisk_is_scsi(dev) &&
                 (dev->tf->request_length == 0))
                 rdisk_command_complete(dev);
             else if (direction == 0)
@@ -931,11 +954,8 @@ rdisk_sense_clear(rdisk_t *dev, UNUSED(int command))
 static void
 rdisk_set_phase(const rdisk_t *dev, const uint8_t phase)
 {
-    const uint8_t scsi_bus = (dev->drv->scsi_device_id >> 4) & 0x0f;
-    const uint8_t scsi_id  = dev->drv->scsi_device_id & 0x0f;
-
-    if (dev->drv->bus_type == RDISK_BUS_SCSI)
-        scsi_devices[scsi_bus][scsi_id].phase = phase;
+    if (rdisk_is_scsi(dev))
+        rdisk_scsi_device(dev)->phase = phase;
 }
 
 static void
@@ -1238,14 +1258,14 @@ rdisk_pre_execution_check(rdisk_t *dev, const uint8_t *cdb)
 
     if (!(rdisk_command_flags[cdb[0]] & IMPLEMENTED)) {
         rdisk_log(dev->log, "Attempting to execute unknown command %02X over %s\n",
-                  cdb[0], (dev->drv->bus_type == RDISK_BUS_SCSI) ?
+                  cdb[0], rdisk_is_scsi(dev) ?
                   "SCSI" : "ATAPI");
 
         rdisk_illegal_opcode(dev, cdb[0]);
         return 0;
     }
 
-    if ((dev->drv->bus_type < RDISK_BUS_SCSI) &&
+    if (!rdisk_is_scsi(dev) &&
         (rdisk_command_flags[cdb[0]] & SCSI_ONLY)) {
         rdisk_log(dev->log, "Attempting to execute SCSI-only command %02X "
                   "over ATAPI\n", cdb[0]);
@@ -1253,7 +1273,7 @@ rdisk_pre_execution_check(rdisk_t *dev, const uint8_t *cdb)
         return 0;
     }
 
-    if ((dev->drv->bus_type == RDISK_BUS_SCSI) &&
+    if (rdisk_is_scsi(dev) &&
         (rdisk_command_flags[cdb[0]] & ATAPI_ONLY)) {
         rdisk_log(dev->log, "Attempting to execute ATAPI-only command %02X "
                   "over SCSI\n", cdb[0]);
@@ -1433,8 +1453,6 @@ rdisk_command(scsi_common_t *sc, const uint8_t *cdb)
 {
     rdisk_t       *dev                = (rdisk_t *) sc;
     char           device_identify[9] = { '8', '6', 'B', '_', 'R', 'D', '0', '0', 0 };
-    const uint8_t  scsi_bus           = (dev->drv->scsi_device_id >> 4) & 0x0f;
-    const uint8_t  scsi_id            = dev->drv->scsi_device_id & 0x0f;
     int            pos                = 0;
     int            idx                = 0;
     int32_t        blen               = 65536;
@@ -1447,8 +1465,8 @@ rdisk_command(scsi_common_t *sc, const uint8_t *cdb)
     int            size_idx;
     int32_t *      BufLen;
 
-    if (dev->drv->bus_type == RDISK_BUS_SCSI) {
-        BufLen          = &scsi_devices[scsi_bus][scsi_id].buffer_length;
+    if (rdisk_is_scsi(dev)) {
+        BufLen          = &rdisk_scsi_device(dev)->buffer_length;
         dev->tf->status &= ~ERR_STAT;
     } else {
         BufLen         = &blen;
@@ -1796,7 +1814,7 @@ rdisk_command(scsi_common_t *sc, const uint8_t *cdb)
         case GPCMD_MODE_SENSE_10:
             rdisk_set_phase(dev, SCSI_PHASE_DATA_IN);
 
-            if (dev->drv->bus_type == RDISK_BUS_SCSI)
+            if (rdisk_is_scsi(dev))
                 block_desc = ((cdb[1] >> 3) & 1) ? 0 : 1;
             else
                 block_desc = 0;
@@ -1980,13 +1998,13 @@ rdisk_command(scsi_common_t *sc, const uint8_t *cdb)
                     dev->buffer[0] = 0x00;    /* Hard disk */
                 dev->buffer[1] = 0x80;        /* Removable */
                 /* SCSI-2 compliant */
-                dev->buffer[2] = (dev->drv->bus_type == RDISK_BUS_SCSI) ? 0x02 : 0x00;
-                dev->buffer[3] = (dev->drv->bus_type == RDISK_BUS_SCSI) ? 0x02 : 0x21;
+                dev->buffer[2] = rdisk_is_scsi(dev) ? 0x02 : 0x00;
+                dev->buffer[3] = rdisk_is_scsi(dev) ? 0x02 : 0x21;
 #if 0
                 dev->buffer[4] = 31;
 #endif
                 dev->buffer[4] = 0;
-                if (dev->drv->bus_type == RDISK_BUS_SCSI) {
+                if (rdisk_is_scsi(dev)) {
                     dev->buffer[6] = 1;       /* 16-bit transfers supported */
                     dev->buffer[7] = 0x20;    /* Wide bus supported */
                 }
@@ -2287,7 +2305,7 @@ rdisk_phase_data_out(scsi_common_t *sc)
                 param_list_len = dev->current_cdb[4];
             }
 
-            if (dev->drv->bus_type == RDISK_BUS_SCSI) {
+            if (rdisk_is_scsi(dev)) {
                 if (dev->current_cdb[0] == GPCMD_MODE_SELECT_6) {
                     block_desc_len = dev->buffer[2];
                     block_desc_len <<= 8;
@@ -2331,7 +2349,7 @@ rdisk_phase_data_out(scsi_common_t *sc)
 
                 pos += page_len;
 
-                if (dev->drv->bus_type == RDISK_BUS_SCSI)
+                if (rdisk_is_scsi(dev))
                     val = zip_100_mode_sense_pages_default_scsi.pages[page][0] & 0x80;
                 else
                     val = zip_100_mode_sense_pages_default.pages[page][0] & 0x80;
@@ -2697,7 +2715,8 @@ rdisk_hard_reset(void)
              * lpt_attach() - first claim wins against any other LPT device.
              */
             if (rdisk_drives[c].bus_type == RDISK_BUS_LPT)
-                device_add_inst(&lpt_epat_device, rdisk_drives[c].res + 1);
+                device_add_inst((rdisk_drives[c].type == RDISK_TYPE_ZIP_100) ? &lpt_zip_device : &lpt_epat_device,
+                                rdisk_drives[c].res + 1);
         }
     }
 }

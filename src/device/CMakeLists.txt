@@ -54,6 +54,7 @@ add_library(dev OBJECT
     lpt_bpck.c
     lpt_ditto.c
     lpt_epat.c
+    lpt_zip.c
     mouse.c
     mouse_bus.c
     mouse_ibm7690_tablet.c
