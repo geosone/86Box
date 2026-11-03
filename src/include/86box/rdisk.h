@@ -234,6 +234,9 @@ typedef struct rdisk_t {
     double             callback;
 
     uint8_t            (*ven_cmd)(void *sc, uint8_t *cdb, int32_t *BufLen);
+
+    /* Not in scsi_common_t: everything above must keep its layout. */
+    uint8_t            soft_wp;    /* the cartridge's software write protection */
 } rdisk_t;
 
 extern rdisk_t      *rdisk[RDISK_NUM];
