@@ -46,6 +46,20 @@
    IDE/EIDE (and external parallel-port) drive - it has no real SCSI variant. */
 #define SPARQ_SECTORS       (1961069)
 
+/*
+   SyQuest EZ135 and EZFlyer 230 cartridges. The internal IDE drives are ATA
+   (not ATAPI) removable hard disks; SyQuest Technical Bulletin 5040 and the
+   EZFlyer 230 MB Internal EIDE manual give the CMOS geometry as 512/16/32
+   and 880/16/32, i.e. these sector counts. The EZFlyer reads and writes
+   EZ135 cartridges too.
+ */
+#define EZ135_CYLINDERS     512
+#define EZFLYER_CYLINDERS   880
+#define SYQUEST_ATA_HEADS   16
+#define SYQUEST_ATA_SPT     32
+#define EZ135_SECTORS       (EZ135_CYLINDERS * SYQUEST_ATA_HEADS * SYQUEST_ATA_SPT)
+#define EZFLYER_SECTORS     (EZFLYER_CYLINDERS * SYQUEST_ATA_HEADS * SYQUEST_ATA_SPT)
+
 #define RDISK_IMAGE_HISTORY       10
 
 enum {
@@ -60,7 +74,9 @@ enum {
     RDISK_TYPE_SYJET_1_5GB,
     RDISK_TYPE_SPARQ_1GB,
     RDISK_TYPE_SUPERDISK_120,
-    RDISK_TYPE_SUPERDISK_240
+    RDISK_TYPE_SUPERDISK_240,
+    RDISK_TYPE_EZ135,
+    RDISK_TYPE_EZFLYER_230
 };
 
 typedef struct rdisk_type_t {
@@ -68,7 +84,7 @@ typedef struct rdisk_type_t {
     uint16_t bytes_per_sector;
 } rdisk_type_t;
 
-#define KNOWN_RDISK_TYPES 8
+#define KNOWN_RDISK_TYPES 10
 static const rdisk_type_t rdisk_types[KNOWN_RDISK_TYPES] = {
     { ZIP_SECTORS,           512 },
     { ZIP_250_SECTORS,       512 },
@@ -80,7 +96,9 @@ static const rdisk_type_t rdisk_types[KNOWN_RDISK_TYPES] = {
     { SYJET_SECTORS,         512 },
     { SPARQ_SECTORS,         512 },
     { SUPERDISK_SECTORS,     512 },
-    { SUPERDISK_240_SECTORS, 512 }
+    { SUPERDISK_240_SECTORS, 512 },
+    { EZ135_SECTORS,         512 },
+    { EZFLYER_SECTORS,       512 }
 };
 
 typedef struct rdisk_drive_type_t {
@@ -90,25 +108,29 @@ typedef struct rdisk_drive_type_t {
     int8_t      supported_media[KNOWN_RDISK_TYPES];
 } rdisk_drive_type_t;
 
-#define KNOWN_RDISK_DRIVE_TYPES 9
+#define KNOWN_RDISK_DRIVE_TYPES 11
 static const rdisk_drive_type_t rdisk_drive_types[KNOWN_RDISK_DRIVE_TYPES] = {
-    { "86BOX",    "REMOVABLE DISK",             "5.00", { 1, 1, 1, 1, 1, 1, 1, 1 }},
-    { "IOMEGA",   "ZIP 100",                    "E.08", { 1, 0, 0, 0, 0, 0, 0, 0 }},
-    { "IOMEGA",   "ZIP 250",                    "42.S", { 1, 1, 0, 0, 0, 0, 0, 0 }},
+    { "86BOX",    "REMOVABLE DISK",             "5.00", { 1, 1, 1, 1, 1, 1, 1, 1, 0, 0 }},
+    { "IOMEGA",   "ZIP 100",                    "E.08", { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 }},
+    { "IOMEGA",   "ZIP 250",                    "42.S", { 1, 1, 0, 0, 0, 0, 0, 0, 0, 0 }},
 #if 0
-    { "IOMEGA",   "ZIP 750",                    "71.u", { 1, 1, 1, 0, 0, 0, 0, 0 }}, /* https://aaru.app/report/189 */
+    { "IOMEGA",   "ZIP 750",                    "71.u", { 1, 1, 1, 0, 0, 0, 0, 0, 0, 0 }}, /* https://aaru.app/report/189 */
 #endif
-    { "IOMEGA",   "JAZ 1GB",                    "H.72", { 0, 0, 1, 0, 0, 0, 0, 0 }},
-    { "IOMEGA",   "JAZ 2GB",                    "E.17", { 0, 0, 1, 1, 0, 0, 0 ,0 }},
+    { "IOMEGA",   "JAZ 1GB",                    "H.72", { 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 }},
+    { "IOMEGA",   "JAZ 2GB",                    "E.17", { 0, 0, 1, 1, 0, 0, 0, 0, 0, 0 }},
     /* Firmware revision "1.06" is a placeholder: the real SyJet's revision
        string could not be confirmed from the SCSI Technical Reference or
        any real-world SCSI probe log. Correct it if a real value surfaces. */
-    { "SYQUEST",  "SyJet 1.5GB",                "1.06", { 0, 0, 0, 0, 1, 0, 0, 0 }},
+    { "SYQUEST",  "SyJet 1.5GB",                "1.06", { 0, 0, 0, 0, 1, 0, 0, 0, 0, 0 }},
     /* Firmware revision "1.03" is likewise an unconfirmed placeholder - the
        SparQ's EIDE Technical Reference doesn't give a real example string. */
-    { "SYQUEST",  "SparQ 1.0GB",                "1.03", { 0, 0, 0, 0, 0, 1, 0, 0 }},
-    { "IMATION",  "SUPERDISK 120 ATAPI",        "04",   { 0, 0, 0, 0, 0, 0, 1, 0 }},
-    { "IMATION",  "SUPERDISK  240       ATAPI", "04",   { 0, 0, 0, 0, 0, 0, 1, 1 }}
+    { "SYQUEST",  "SparQ 1.0GB",                "1.03", { 0, 0, 0, 0, 0, 1, 0, 0, 0, 0 }},
+    { "IMATION",  "SUPERDISK 120 ATAPI",        "04",   { 0, 0, 0, 0, 0, 0, 1, 0, 0, 0 }},
+    { "IMATION",  "SUPERDISK  240       ATAPI", "04",   { 0, 0, 0, 0, 0, 0, 1, 1, 0, 0 }},
+    /* Model strings and revisions of the two SyQuest ATA drives are
+       placeholders: no IDENTIFY dump of a real one has been found. */
+    { "SYQUEST",  "EZ135A",                     "1.00", { 0, 0, 0, 0, 0, 0, 0, 0, 1, 0 }},
+    { "SYQUEST",  "EZFlyer 230",                "1.00", { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1 }}
 };
 
 enum {
@@ -153,6 +175,22 @@ typedef struct rdisk_drive_t {
     uint32_t           base;
 } rdisk_drive_t;
 
+/* The SyQuest EZ drives speak native ATA and attach only to RDISK_BUS_IDE;
+   every other type is an ATAPI, SCSI or parallel port device. */
+static inline int
+rdisk_type_is_ata(uint32_t type)
+{
+    return (type == RDISK_TYPE_EZ135) || (type == RDISK_TYPE_EZFLYER_230);
+}
+
+static inline int
+rdisk_type_bus_compatible(uint8_t bus, uint32_t type)
+{
+    if (bus == RDISK_BUS_DISABLED)
+        return 1;
+    return (bus == RDISK_BUS_IDE) == rdisk_type_is_ata(type);
+}
+
 typedef struct rdisk_t {
     mode_sense_pages_t ms_pages_saved;
 
@@ -173,8 +211,8 @@ typedef struct rdisk_t {
 
     uint8_t            id;
     uint8_t            cur_lun;
-    uint8_t            pad0;
-    uint8_t            pad1;
+    uint8_t            ata_locked; /* IDE (ATA) bus: DOOR LOCK in effect */
+    uint8_t            ata_mc;     /* IDE (ATA) bus: medium changed, not yet reported */
 
     uint16_t           max_transfer_len;
     uint16_t           pad2;

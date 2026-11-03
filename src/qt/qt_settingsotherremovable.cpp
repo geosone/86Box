@@ -84,6 +84,30 @@ firstCompatibleTapeType(int bus)
     return 0;
 }
 
+static void
+updateRDiskTypeCombo(QComboBox *busCombo, QComboBox *typeCombo)
+{
+    uint8_t bus   = busCombo->currentData().toUInt();
+    auto   *model = qobject_cast<QStandardItemModel *>(typeCombo->model());
+
+    for (int i = 0; i < model->rowCount(); i++) {
+        auto *item = model->item(i);
+        if (item)
+            item->setEnabled(rdisk_type_bus_compatible(bus, item->data(Qt::UserRole).toUInt()));
+    }
+}
+
+static uint32_t
+firstCompatibleRDiskType(uint8_t bus)
+{
+    for (uint32_t i = 0; i < KNOWN_RDISK_DRIVE_TYPES; i++) {
+        if (rdisk_type_bus_compatible(bus, i))
+            return i;
+    }
+
+    return 0;
+}
+
 void
 SettingsOtherRemovable::setMOBus(QAbstractItemModel *model, const QModelIndex &idx, uint8_t bus, uint8_t channel)
 {
@@ -116,10 +140,11 @@ SettingsOtherRemovable::setRDiskBus(QAbstractItemModel *model, const QModelIndex
         case RDISK_BUS_DISABLED:
             icon = rdisk_disabled_icon;
             break;
+        case RDISK_BUS_IDE:
         case RDISK_BUS_ATAPI:
         case RDISK_BUS_SCSI:
         case RDISK_BUS_LPT:
-            icon = ((type == RDISK_TYPE_ZIP_100) || (type == RDISK_TYPE_ZIP_250)) ? zip_icon : ((type == RDISK_TYPE_JAZ_1GB) || (type == RDISK_TYPE_JAZ_2GB)) ? jaz_icon : ((type == RDISK_TYPE_SYJET_1_5GB) || (type == RDISK_TYPE_SPARQ_1GB)) ? syquest_icon : rdisk_icon;
+            icon = ((type == RDISK_TYPE_ZIP_100) || (type == RDISK_TYPE_ZIP_250)) ? zip_icon : ((type == RDISK_TYPE_JAZ_1GB) || (type == RDISK_TYPE_JAZ_2GB)) ? jaz_icon : ((type == RDISK_TYPE_SYJET_1_5GB) || (type == RDISK_TYPE_SPARQ_1GB) || (type == RDISK_TYPE_EZ135) || (type == RDISK_TYPE_EZFLYER_230)) ? syquest_icon : rdisk_icon;
             break;
 
         default:
@@ -189,10 +214,11 @@ SettingsOtherRemovable::setRDiskType(QAbstractItemModel *model, const QModelInde
         case RDISK_BUS_DISABLED:
             icon = rdisk_disabled_icon;
             break;
+        case RDISK_BUS_IDE:
         case RDISK_BUS_ATAPI:
         case RDISK_BUS_SCSI:
         case RDISK_BUS_LPT:
-            icon = ((type == RDISK_TYPE_ZIP_100) || (type == RDISK_TYPE_ZIP_250)) ? zip_icon : ((type == RDISK_TYPE_JAZ_1GB) || (type == RDISK_TYPE_JAZ_2GB)) ? jaz_icon : ((type == RDISK_TYPE_SYJET_1_5GB) || (type == RDISK_TYPE_SPARQ_1GB)) ? syquest_icon : rdisk_icon;
+            icon = ((type == RDISK_TYPE_ZIP_100) || (type == RDISK_TYPE_ZIP_250)) ? zip_icon : ((type == RDISK_TYPE_JAZ_1GB) || (type == RDISK_TYPE_JAZ_2GB)) ? jaz_icon : ((type == RDISK_TYPE_SYJET_1_5GB) || (type == RDISK_TYPE_SPARQ_1GB) || (type == RDISK_TYPE_EZ135) || (type == RDISK_TYPE_EZFLYER_230)) ? syquest_icon : rdisk_icon;
             break;
 
         default:
@@ -265,6 +291,14 @@ SettingsOtherRemovable::SettingsOtherRemovable(QWidget *parent)
     Harddrives::populateRemovableBuses(ui->comboBoxRDiskBus->model());
     if ((ui->comboBoxRDiskBus->model()->rowCount() - 4) > 0)
         ui->comboBoxRDiskBus->model()->removeRows(4, ui->comboBoxRDiskBus->model()->rowCount() - 3);
+    {
+        /* Native ATA cartridge drives (SyQuest EZ135, EZFlyer). */
+        auto *busModel = ui->comboBoxRDiskBus->model();
+        int   row      = busModel->rowCount();
+        busModel->insertRows(row, 1);
+        busModel->setData(busModel->index(row, 0), "IDE");
+        busModel->setData(busModel->index(row, 0), RDISK_BUS_IDE, Qt::UserRole);
+    }
     model = ui->comboBoxRDiskType->model();
     {
         Models::Batch typeRows(model);
@@ -283,7 +317,7 @@ SettingsOtherRemovable::SettingsOtherRemovable(QWidget *parent)
         auto idx = model->index(i, 0);
         setRDiskBus(model, idx, rdisk_drives[i].bus_type, rdisk_drives[i].type, rdisk_drives[i].res);
         setRDiskType(model, idx.siblingAtColumn(1), rdisk_drives[i].bus_type, rdisk_drives[i].type);
-        Harddrives::busTrackClass->device_track(1, DEV_RDISK, rdisk_drives[i].bus_type, rdisk_drives[i].bus_type == RDISK_BUS_ATAPI ? rdisk_drives[i].ide_channel : rdisk_drives[i].scsi_device_id);
+        Harddrives::busTrackClass->device_track(1, DEV_RDISK, rdisk_drives[i].bus_type, ((rdisk_drives[i].bus_type == RDISK_BUS_ATAPI) || (rdisk_drives[i].bus_type == RDISK_BUS_IDE)) ? rdisk_drives[i].ide_channel : rdisk_drives[i].scsi_device_id);
     }
 
 
@@ -508,6 +542,7 @@ SettingsOtherRemovable::on_comboBoxRDiskBus_currentIndexChanged(int index)
         ui->comboBoxRDiskType->setEnabled(enabled);
         Harddrives::populateBusChannels(ui->comboBoxRDiskChannel->model(), bus, Harddrives::busTrackClass);
     }
+    updateRDiskTypeCombo(ui->comboBoxRDiskBus, ui->comboBoxRDiskType);
 }
 
 void
@@ -534,8 +569,11 @@ SettingsOtherRemovable::on_comboBoxRDiskBus_activated(int)
 {
     auto i = ui->treeViewRDisk->selectionModel()->currentIndex().siblingAtColumn(0);
     Harddrives::busTrackClass->device_track(0, DEV_RDISK, ui->treeViewRDisk->model()->data(i, Qt::UserRole).toInt(), ui->treeViewRDisk->model()->data(i, Qt::UserRole + 1).toInt());
-    ui->comboBoxRDiskChannel->setCurrentIndex(ui->comboBoxRDiskBus->currentData().toUInt() == RDISK_BUS_ATAPI ? Harddrives::busTrackClass->next_free_ide_channel() : Harddrives::busTrackClass->next_free_scsi_id());
+    ui->comboBoxRDiskChannel->setCurrentIndex(((ui->comboBoxRDiskBus->currentData().toUInt() == RDISK_BUS_ATAPI) || (ui->comboBoxRDiskBus->currentData().toUInt() == RDISK_BUS_IDE)) ? Harddrives::busTrackClass->next_free_ide_channel() : Harddrives::busTrackClass->next_free_scsi_id());
     ui->treeViewRDisk->model()->data(i, Qt::UserRole + 1);
+    if (!rdisk_type_bus_compatible(ui->comboBoxRDiskBus->currentData().toUInt(),
+                                   ui->comboBoxRDiskType->currentData().toUInt()))
+        ui->comboBoxRDiskType->setCurrentIndex(firstCompatibleRDiskType(ui->comboBoxRDiskBus->currentData().toUInt()));
     setRDiskBus(ui->treeViewRDisk->model(),
                 ui->treeViewRDisk->selectionModel()->currentIndex(),
                 ui->comboBoxRDiskBus->currentData().toUInt(),
