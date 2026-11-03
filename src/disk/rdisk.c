@@ -1057,7 +1057,7 @@ rdisk_not_ready(rdisk_t *dev)
 static void
 rdisk_write_protected(rdisk_t *dev)
 {
-    rdisk_sense_key = SENSE_UNIT_ATTENTION;
+    rdisk_sense_key = SENSE_DATA_PROTECT;
     rdisk_asc       = ASC_WRITE_PROTECTED;
     rdisk_ascq      = 0;
     rdisk_info      = (dev->sector_pos >> 24)        |
@@ -1065,6 +1065,13 @@ rdisk_write_protected(rdisk_t *dev)
                      ((dev->sector_pos >> 8)  << 16) |
                      ( dev->sector_pos        << 24);
     rdisk_cmd_error(dev);
+}
+
+/* The image is read-only, or the cartridge's software write protection is set. */
+static int
+rdisk_is_protected(const rdisk_t *dev)
+{
+    return dev->drv->read_only || dev->soft_wp;
 }
 
 static void
@@ -1534,7 +1541,7 @@ rdisk_command(scsi_common_t *sc, const uint8_t *cdb)
             break;
 
         case GPCMD_FORMAT_UNIT:
-            if (dev->drv->read_only)
+            if (rdisk_is_protected(dev))
                 rdisk_write_protected(dev);
             else {
                 rdisk_set_phase(dev, SCSI_PHASE_STATUS);
@@ -1563,7 +1570,7 @@ rdisk_command(scsi_common_t *sc, const uint8_t *cdb)
                 for (i = 0x00; i < 0x13; i++)
                     dev->buffer[i + 0x02] = 0x00;
                 dev->buffer[0x15] = 0x00;
-                if (dev->drv->read_only)
+                if (rdisk_is_protected(dev))
                     dev->buffer[0x15] |= 0x02;
                 for (i = 0x00; i < 0x27; i++)
                     dev->buffer[i + 0x16] = 0x00;
@@ -1713,7 +1720,7 @@ rdisk_command(scsi_common_t *sc, const uint8_t *cdb)
             rdisk_set_phase(dev, SCSI_PHASE_DATA_OUT);
             alloc_length = 512;
 
-            if (dev->drv->read_only) {
+            if (rdisk_is_protected(dev)) {
                 rdisk_write_protected(dev);
                 break;
             }
@@ -1790,7 +1797,7 @@ rdisk_command(scsi_common_t *sc, const uint8_t *cdb)
             if ((cdb[1] & 6) == 6)
                 rdisk_invalid_field(dev, cdb[1]);
             else {
-                if (dev->drv->read_only)
+                if (rdisk_is_protected(dev))
                     rdisk_write_protected(dev);
                 else {
                     dev->sector_len = (cdb[7] << 8) | cdb[8];
@@ -1853,6 +1860,8 @@ rdisk_command(scsi_common_t *sc, const uint8_t *cdb)
                     len            = MIN(len, alloc_length);
                     dev->buffer[0] = len - 1;
                     dev->buffer[1] = 0;
+                    /* Device-specific parameter: WP */
+                    dev->buffer[2] = rdisk_is_protected(dev) ? 0x80 : 0x00;
                     if (block_desc)
                         dev->buffer[3] = 8;
                 } else {
@@ -1862,6 +1871,7 @@ rdisk_command(scsi_common_t *sc, const uint8_t *cdb)
                     dev->buffer[0] = (len - 2) >> 8;
                     dev->buffer[1] = (len - 2) & 255;
                     dev->buffer[2] = 0;
+                    dev->buffer[3] = rdisk_is_protected(dev) ? 0x80 : 0x00;
                     if (block_desc) {
                         dev->buffer[6] = 0;
                         dev->buffer[7] = 8;
@@ -2142,6 +2152,39 @@ atapi_out:
             rdisk_set_buf_len(dev, BufLen, &len);
 
             rdisk_data_command_finish(dev, len, len, len, 0);
+            break;
+
+        /*
+           Iomega SET PROTECTION MODE: CDB byte 1 bits 3-0 the mode, byte 4
+           the length of the password that follows. Only the modes without
+           a password are emulated: 0 not protected, 2 write protected. The
+           real drive stores the mode on the disk; here it lasts until the
+           disk is changed. A read-only image stays protected.
+         */
+        case GPCMD_IOMEGA_SET_PROTECTION_MODE:
+            if ((dev->drv->type != RDISK_TYPE_ZIP_100) && (dev->drv->type != RDISK_TYPE_ZIP_250)) {
+                rdisk_illegal_opcode(dev, cdb[0]);
+                break;
+            }
+            if (dev->drv->fp == NULL) {
+                rdisk_not_ready(dev);
+                break;
+            }
+            if (cdb[4] != 0x00) {
+                rdisk_invalid_field(dev, cdb[4]);
+                break;
+            }
+            switch (cdb[1] & 0x0f) {
+                case 0x00:
+                case 0x02:
+                    dev->soft_wp = (cdb[1] & 0x0f) == 0x02;
+                    rdisk_set_phase(dev, SCSI_PHASE_STATUS);
+                    rdisk_command_complete(dev);
+                    break;
+                default:
+                    rdisk_invalid_field(dev, cdb[1]);
+                    break;
+            }
             break;
 
         case GPCMD_IOMEGA_EJECT:
